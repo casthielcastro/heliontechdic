@@ -792,7 +792,7 @@ function DeepDiveView({ termo, onClose }: { termo: string; onClose: () => void }
             {data.relacionados.length > 0 && (
               <DeepSection label="⊕ Conceitos Relacionados" bg={C.card}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {data.relacionados.map((r) => (
+                  {data.relacionados.map((r: string) => (
                     <a
                       key={r}
                       href={`https://www.google.com/search?q=${encodeURIComponent(r)}`}
