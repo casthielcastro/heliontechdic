@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { humanize, deepDive } from "@/lib/helion.functions";
-import helionLogo from "@/assets/helion-logo.png";
 import helionLion from "@/assets/helion-lion.png";
 
 export const Route = createFileRoute("/")({
