@@ -5,12 +5,14 @@ const MODEL = "google/gemini-2.5-flash";
 
 type Mode = "casual" | "tecnica";
 type Length = "curta" | "longa";
+type Analise = "padrao" | "codigo";
 
 interface HumanizeInput {
   termo: string;
   modo: Mode;
   tamanho: Length;
   imageDataUrl?: string | null;
+  analise?: Analise;
 }
 
 function toneText(modo: Mode) {
@@ -25,7 +27,25 @@ function sizeText(tamanho: Length) {
     : "aprofundada, com 4 a 6 parágrafos, analogias e exemplos";
 }
 
-function systemPrompt(modo: Mode, tamanho: Length) {
+function systemPrompt(modo: Mode, tamanho: Length, analise: Analise) {
+  if (analise === "codigo") {
+    return `Você é um mentor sênior de programação. A entrada é uma imagem contendo código-fonte. Sua tarefa:
+
+1. Identifique a LINGUAGEM de programação na imagem (ex.: Python, JavaScript, Go, SQL, Bash…). Comece a resposta exatamente assim:
+**Linguagem detectada:** <nome da linguagem>
+
+2. Explique o PROPÓSITO geral do trecho (1 parágrafo).
+
+3. Faça uma análise LINHA A LINHA. Para cada linha relevante, mostre o trecho em \`código\` e explique de forma aprofundada o que ela faz, incluindo o significado de comandos, operadores, símbolos (\`=>\`, \`::\`, \`->\`, \`&&\`, \`*\`, \`&\`, etc.), palavras-chave e estruturas de controle.
+
+4. Encerre com **Boas práticas / observações** (1 parágrafo) sobre o que poderia ser melhorado ou pontos de atenção.
+
+REGRAS:
+- Português brasileiro, tom: ${toneText(modo)}.
+- Extensão: ${sizeText(tamanho)}, mas NUNCA pule a análise linha a linha.
+- Se a imagem NÃO contiver código de programação, responda APENAS com: {"fora_de_escopo":true}
+- Texto puro com **negrito** para destaque; sem markdown com #; pode usar \`crase\` para trechos curtos de código.`;
+  }
   return `Você é um especialista apaixonado em tecnologia. Responde APENAS sobre tecnologia, computação, programação, hardware, software, internet, redes, segurança, IA e afins.
 
 REGRA ABSOLUTA: se o termo/imagem NÃO for de tecnologia, responda SOMENTE com o JSON exato: {"fora_de_escopo":true}
@@ -65,7 +85,10 @@ export const humanize = createServerFn({ method: "POST" })
   .inputValidator((d: HumanizeInput) => d)
   .handler(async ({ data }) => {
     const userContent: any[] = [];
-    const userText = data.imageDataUrl
+    const isCode = data.analise === "codigo" && !!data.imageDataUrl;
+    const userText = isCode
+      ? `Analise o código presente nesta imagem conforme as instruções do sistema (linguagem, propósito, linha a linha, boas práticas).${data.termo ? ` Contexto do usuário: "${data.termo}".` : ""}`
+      : data.imageDataUrl
       ? `Identifique e explique os jargões, siglas ou expressões técnicas presentes nesta imagem.${data.termo ? ` Contexto adicional do usuário: "${data.termo}".` : ""}`
       : `Explique o seguinte termo/sigla/expressão de tecnologia: "${data.termo}"`;
     userContent.push({ type: "text", text: userText });
@@ -80,7 +103,7 @@ export const humanize = createServerFn({ method: "POST" })
       model: MODEL,
       max_tokens: 1200,
       messages: [
-        { role: "system", content: systemPrompt(data.modo, data.tamanho) },
+        { role: "system", content: systemPrompt(data.modo, data.tamanho, data.analise ?? "padrao") },
         { role: "user", content: userContent },
       ],
     });
@@ -94,9 +117,11 @@ export const humanize = createServerFn({ method: "POST" })
 
 interface DeepDiveInput {
   termo: string;
+  analise?: Analise;
+  contextoCodigo?: string | null;
 }
 
-const DEEP_SYSTEM = `Você é um especialista em tecnologia. Para o termo informado, responda EXCLUSIVAMENTE com um JSON válido (sem markdown, sem texto extra) com este formato exato:
+const DEEP_SYSTEM_PADRAO = `Você é um especialista em tecnologia. Para o termo informado, responda EXCLUSIVAMENTE com um JSON válido (sem markdown, sem texto extra) com este formato exato:
 {
   "profundidade": "3-5 parágrafos detalhados sobre o tema",
   "exemplo": "exemplo real em 1-2 parágrafos",
@@ -106,15 +131,34 @@ const DEEP_SYSTEM = `Você é um especialista em tecnologia. Para o termo inform
 }
 Em português brasileiro. Prosa fluida, sem listas com bullets dentro do texto. Se não houver documentação oficial clara, use null no docLink (sem aspas).`;
 
+const DEEP_SYSTEM_CODIGO = `Você é um mentor sênior de programação. Receberá a LINGUAGEM detectada (e opcionalmente o uso/propósito do trecho analisado). Responda EXCLUSIVAMENTE com JSON válido (sem markdown, sem texto extra) neste formato exato:
+{
+  "profundidade": "3-5 parágrafos detalhados sobre a linguagem detectada e sobre o uso específico do código analisado, conectando os dois",
+  "exemplo": "exemplo de código real comentado em 1-2 parágrafos, ilustrando o mesmo uso",
+  "analogia": "analogia criativa em 1-2 frases",
+  "relacionados": ["conceito1","conceito2","conceito3","conceito4"],
+  "docLink": "URL da documentação oficial da linguagem ou null",
+  "videos": [{"titulo":"...","url":"https://www.youtube.com/results?search_query=..."}],
+  "artigos": [{"titulo":"...","url":"https://..."}],
+  "exemplosLinks": [{"titulo":"...","url":"https://..."}]
+}
+Em português brasileiro. Em videos/artigos/exemplosLinks, inclua 3 itens cada, COBRINDO TANTO a linguagem detectada QUANTO o uso específico do trecho. Prefira fontes confiáveis (documentação oficial, MDN, DevDocs, freeCodeCamp, GitHub, Real Python, etc.). Use URLs reais sempre que possível; quando não tiver certeza, use buscas no formato "https://www.google.com/search?q=..." ou "https://www.youtube.com/results?search_query=...".`;
+
 export const deepDive = createServerFn({ method: "POST" })
   .inputValidator((d: DeepDiveInput) => d)
   .handler(async ({ data }) => {
+    const isCode = data.analise === "codigo";
     const content = await callGateway({
       model: MODEL,
-      max_tokens: 1800,
+      max_tokens: isCode ? 2400 : 1800,
       messages: [
-        { role: "system", content: DEEP_SYSTEM },
-        { role: "user", content: `Termo: ${data.termo}` },
+        { role: "system", content: isCode ? DEEP_SYSTEM_CODIGO : DEEP_SYSTEM_PADRAO },
+        {
+          role: "user",
+          content: isCode
+            ? `Linguagem/termo: ${data.termo}.${data.contextoCodigo ? ` Contexto do código analisado: ${data.contextoCodigo}` : ""}`
+            : `Termo: ${data.termo}`,
+        },
       ],
     });
     let jsonText = content.trim();
@@ -127,6 +171,13 @@ export const deepDive = createServerFn({ method: "POST" })
     }
     try {
       const parsed = JSON.parse(jsonText);
+      const parseLinks = (arr: unknown) =>
+        Array.isArray(arr)
+          ? arr
+              .slice(0, 5)
+              .map((it: any) => ({ titulo: String(it?.titulo ?? ""), url: String(it?.url ?? "") }))
+              .filter((it) => it.titulo && it.url)
+          : [];
       return {
         profundidade: String(parsed.profundidade ?? ""),
         exemplo: String(parsed.exemplo ?? ""),
@@ -135,6 +186,9 @@ export const deepDive = createServerFn({ method: "POST" })
           ? parsed.relacionados.slice(0, 8).map((s: unknown) => String(s))
           : [],
         docLink: parsed.docLink && parsed.docLink !== "null" ? String(parsed.docLink) : null,
+        videos: parseLinks(parsed.videos),
+        artigos: parseLinks(parsed.artigos),
+        exemplosLinks: parseLinks(parsed.exemplosLinks),
       };
     } catch {
       return {
@@ -143,6 +197,9 @@ export const deepDive = createServerFn({ method: "POST" })
         analogia: "",
         relacionados: [] as string[],
         docLink: null as string | null,
+        videos: [] as { titulo: string; url: string }[],
+        artigos: [] as { titulo: string; url: string }[],
+        exemplosLinks: [] as { titulo: string; url: string }[],
       };
     }
   });
