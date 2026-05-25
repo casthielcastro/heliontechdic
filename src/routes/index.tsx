@@ -551,13 +551,19 @@ function Helion() {
       </div>
 
       {deepOpen && resposta && (
-        <DeepDiveView
-          termo={termo || "imagem enviada"}
-          analise={analise ?? "padrao"}
-          contextoCodigo={analise === "codigo" ? (resposta ?? "").slice(0, 1200) : null}
-          onClose={() => setDeepOpen(false)}
-          onAudit={() => setAuditOpen(true)}
-        />
+        (() => {
+          const langMatch = analise === "codigo" ? resposta.match(/Linguagem detectada:\*\*\s*([^\n*]+)/i) : null;
+          const deepTermo = langMatch?.[1]?.trim() || termo || "imagem enviada";
+          return (
+            <DeepDiveView
+              termo={deepTermo}
+              analise={analise ?? "padrao"}
+              contextoCodigo={analise === "codigo" ? resposta.slice(0, 1200) : null}
+              onClose={() => setDeepOpen(false)}
+              onAudit={() => setAuditOpen(true)}
+            />
+          );
+        })()
       )}
 
       {auditOpen && (
