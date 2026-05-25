@@ -553,6 +553,8 @@ function Helion() {
       {deepOpen && resposta && (
         <DeepDiveView
           termo={termo || "imagem enviada"}
+          analise={analise ?? "padrao"}
+          contextoCodigo={analise === "codigo" ? (resposta ?? "").slice(0, 1200) : null}
           onClose={() => setDeepOpen(false)}
           onAudit={() => setAuditOpen(true)}
         />
