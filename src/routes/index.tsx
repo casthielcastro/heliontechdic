@@ -61,6 +61,7 @@ function Spinner() {
 /* ---------- TYPES ---------- */
 type Mode = "casual" | "tecnica";
 type Length = "curta" | "longa";
+type Analise = "padrao" | "codigo";
 
 /* ---------- MAIN ---------- */
 function Helion() {
@@ -69,6 +70,7 @@ function Helion() {
   const [imageName, setImageName] = useState<string | null>(null);
   const [modo, setModo] = useState<Mode | null>(null);
   const [tamanho, setTamanho] = useState<Length | null>(null);
+  const [analise, setAnalise] = useState<Analise | null>(null);
   const [loading, setLoading] = useState(false);
   const [resposta, setRespostaState] = useState<string | null>(null);
   const [foraEscopo, setForaEscopo] = useState(false);
@@ -83,7 +85,14 @@ function Helion() {
 
   const callHumanize = useServerFn(humanize);
 
-  const canSubmit = (termo.trim().length > 0 || imageDataUrl) && modo && tamanho && !loading;
+  const codeNeedsImage = analise === "codigo" && !imageDataUrl;
+  const canSubmit =
+    (termo.trim().length > 0 || imageDataUrl) &&
+    modo &&
+    tamanho &&
+    analise &&
+    !codeNeedsImage &&
+    !loading;
 
   const handleFile = useCallback((file: File | null | undefined) => {
     if (!file) return;
@@ -101,6 +110,7 @@ function Helion() {
     setImageName(null);
     setModo(null);
     setTamanho(null);
+    setAnalise(null);
     setRespostaState(null);
     setForaEscopo(false);
     setErro(null);
@@ -129,7 +139,7 @@ function Helion() {
   };
 
   const submit = async () => {
-    if (!canSubmit || !modo || !tamanho) return;
+    if (!canSubmit || !modo || !tamanho || !analise) return;
     setLoading(true);
     setRespostaState(null);
     setForaEscopo(false);
@@ -137,7 +147,7 @@ function Helion() {
     setScore(0);
     setScoreTouched(false);
     try {
-      const out = await callHumanize({ data: { termo, modo, tamanho, imageDataUrl } });
+      const out = await callHumanize({ data: { termo, modo, tamanho, imageDataUrl, analise } });
       if (out.foraDeEscopo) setForaEscopo(true);
       else setRespostaState(out.texto);
     } catch (e: any) {
@@ -367,6 +377,30 @@ function Helion() {
             </div>
           </div>
 
+          {/* ANÁLISE */}
+          <div style={{ marginTop: 20 }}>
+            <span style={labelStyle}>Tipo de análise</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <GlassOption
+                active={analise === "padrao"}
+                onClick={() => setAnalise("padrao")}
+                label="Padrão"
+                desc="Explica termos, siglas e expressões técnicas"
+              />
+              <GlassOption
+                active={analise === "codigo"}
+                onClick={() => setAnalise("codigo")}
+                label="Código (imagem)"
+                desc="Detecta a linguagem e explica o código linha a linha"
+              />
+            </div>
+            {analise === "codigo" && !imageDataUrl && (
+              <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.amber, marginTop: 10, letterSpacing: "0.04em" }}>
+                Anexe uma captura de tela do código para ativar este modo.
+              </p>
+            )}
+          </div>
+
           {/* SUBMIT */}
           <button
             onClick={submit}
@@ -517,11 +551,19 @@ function Helion() {
       </div>
 
       {deepOpen && resposta && (
-        <DeepDiveView
-          termo={termo || "imagem enviada"}
-          onClose={() => setDeepOpen(false)}
-          onAudit={() => setAuditOpen(true)}
-        />
+        (() => {
+          const langMatch = analise === "codigo" ? resposta.match(/Linguagem detectada:\*\*\s*([^\n*]+)/i) : null;
+          const deepTermo = langMatch?.[1]?.trim() || termo || "imagem enviada";
+          return (
+            <DeepDiveView
+              termo={deepTermo}
+              analise={analise ?? "padrao"}
+              contextoCodigo={analise === "codigo" ? resposta.slice(0, 1200) : null}
+              onClose={() => setDeepOpen(false)}
+              onAudit={() => setAuditOpen(true)}
+            />
+          );
+        })()
       )}
 
       {auditOpen && (
@@ -933,8 +975,14 @@ function InstitutionalFooter() {
 
 /* ---------- DEEP DIVE ---------- */
 function DeepDiveView({
-  termo, onClose, onAudit,
-}: { termo: string; onClose: () => void; onAudit: () => void }) {
+  termo, analise, contextoCodigo, onClose, onAudit,
+}: {
+  termo: string;
+  analise: Analise;
+  contextoCodigo: string | null;
+  onClose: () => void;
+  onAudit: () => void;
+}) {
   const callDeep = useServerFn(deepDive);
   const [data, setData] = useState<null | Awaited<ReturnType<typeof callDeep>>>(null);
   const [loading, setLoading] = useState(true);
@@ -942,12 +990,12 @@ function DeepDiveView({
 
   useMemo(() => {
     setLoading(true);
-    callDeep({ data: { termo } })
+    callDeep({ data: { termo, analise, contextoCodigo } })
       .then((d) => setData(d))
       .catch((e: any) => setErr(e?.message ?? "Falha ao carregar compêndio"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [termo]);
+  }, [termo, analise]);
 
   const q = encodeURIComponent(termo);
 
@@ -1017,6 +1065,34 @@ function DeepDiveView({
                 )}
               </div>
             </DeepSection>
+
+            {analise === "codigo" && data.videos.length > 0 && (
+              <DeepSection label="Vídeos recomendados">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.videos.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="YouTube · vídeo" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
+            {analise === "codigo" && data.artigos.length > 0 && (
+              <DeepSection label="Artigos e textos">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.artigos.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="Artigo / texto" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
+            {analise === "codigo" && data.exemplosLinks.length > 0 && (
+              <DeepSection label="Exemplos práticos">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.exemplosLinks.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="Exemplo / repositório" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
 
             {/* AUDIT BUTTON inside deep dive */}
             <div style={{ marginTop: 36, display: "flex", justifyContent: "center" }}>
