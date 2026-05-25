@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { humanize, deepDive } from "@/lib/helion.functions";
-import helionLion from "@/assets/helion-lion.png";
+import helionLogo from "@/assets/helion-logo.png";
 
 export const Route = createFileRoute("/")({
   component: Helion,
@@ -264,32 +264,19 @@ function Helion() {
       <div style={container}>
         {/* HEADER — uploaded logo */}
         <header style={{ textAlign: "center", marginBottom: 40 }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
-            <img
-              src={helionLion}
-              alt=""
-              aria-hidden
-              style={{ width: 72, height: 72, objectFit: "contain", filter: "drop-shadow(0 0 24px rgba(245,158,11,0.35))" }}
-            />
-            <h1
-              style={{
-                fontFamily: FONT_DISPLAY,
-                fontSize: 44,
-                fontWeight: 700,
-                letterSpacing: "-0.04em",
-                margin: 0,
-                background: `linear-gradient(180deg, ${C.text} 0%, ${C.amberHi} 100%)`,
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-                backgroundClip: "text",
-              }}
-            >
-              HELION
-            </h1>
-            <p style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "0.22em", textTransform: "uppercase", color: C.textLt, margin: 0 }}>
-              Traduzindo o técnico · iluminando o humano
-            </p>
-          </div>
+          <img
+            src={helionLogo}
+            alt="Helion — Traduzindo o técnico, iluminando o humano."
+            style={{
+              display: "block",
+              width: "100%",
+              maxWidth: 560,
+              height: "auto",
+              margin: "0 auto",
+              userSelect: "none",
+              pointerEvents: "none",
+            }}
+          />
         </header>
 
         {/* MAIN GLASS CARD */}
