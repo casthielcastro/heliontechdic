@@ -969,8 +969,14 @@ function InstitutionalFooter() {
 
 /* ---------- DEEP DIVE ---------- */
 function DeepDiveView({
-  termo, onClose, onAudit,
-}: { termo: string; onClose: () => void; onAudit: () => void }) {
+  termo, analise, contextoCodigo, onClose, onAudit,
+}: {
+  termo: string;
+  analise: Analise;
+  contextoCodigo: string | null;
+  onClose: () => void;
+  onAudit: () => void;
+}) {
   const callDeep = useServerFn(deepDive);
   const [data, setData] = useState<null | Awaited<ReturnType<typeof callDeep>>>(null);
   const [loading, setLoading] = useState(true);
@@ -978,12 +984,12 @@ function DeepDiveView({
 
   useMemo(() => {
     setLoading(true);
-    callDeep({ data: { termo } })
+    callDeep({ data: { termo, analise, contextoCodigo } })
       .then((d) => setData(d))
       .catch((e: any) => setErr(e?.message ?? "Falha ao carregar compêndio"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [termo]);
+  }, [termo, analise]);
 
   const q = encodeURIComponent(termo);
 
@@ -1053,6 +1059,34 @@ function DeepDiveView({
                 )}
               </div>
             </DeepSection>
+
+            {analise === "codigo" && data.videos.length > 0 && (
+              <DeepSection label="Vídeos recomendados">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.videos.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="YouTube · vídeo" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
+            {analise === "codigo" && data.artigos.length > 0 && (
+              <DeepSection label="Artigos e textos">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.artigos.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="Artigo / texto" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
+            {analise === "codigo" && data.exemplosLinks.length > 0 && (
+              <DeepSection label="Exemplos práticos">
+                <div style={{ display: "grid", gap: 10 }}>
+                  {data.exemplosLinks.map((v) => (
+                    <LinkCard key={v.url} title={v.titulo} subtitle="Exemplo / repositório" href={v.url} />
+                  ))}
+                </div>
+              </DeepSection>
+            )}
 
             {/* AUDIT BUTTON inside deep dive */}
             <div style={{ marginTop: 36, display: "flex", justifyContent: "center" }}>
