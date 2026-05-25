@@ -377,6 +377,30 @@ function Helion() {
             </div>
           </div>
 
+          {/* ANÁLISE */}
+          <div style={{ marginTop: 20 }}>
+            <span style={labelStyle}>Tipo de análise</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <GlassOption
+                active={analise === "padrao"}
+                onClick={() => setAnalise("padrao")}
+                label="Padrão"
+                desc="Explica termos, siglas e expressões técnicas"
+              />
+              <GlassOption
+                active={analise === "codigo"}
+                onClick={() => setAnalise("codigo")}
+                label="Código (imagem)"
+                desc="Detecta a linguagem e explica o código linha a linha"
+              />
+            </div>
+            {analise === "codigo" && !imageDataUrl && (
+              <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.amber, marginTop: 10, letterSpacing: "0.04em" }}>
+                Anexe uma captura de tela do código para ativar este modo.
+              </p>
+            )}
+          </div>
+
           {/* SUBMIT */}
           <button
             onClick={submit}
