@@ -61,6 +61,7 @@ function Spinner() {
 /* ---------- TYPES ---------- */
 type Mode = "casual" | "tecnica";
 type Length = "curta" | "longa";
+type Analise = "padrao" | "codigo";
 
 /* ---------- MAIN ---------- */
 function Helion() {
@@ -69,6 +70,7 @@ function Helion() {
   const [imageName, setImageName] = useState<string | null>(null);
   const [modo, setModo] = useState<Mode | null>(null);
   const [tamanho, setTamanho] = useState<Length | null>(null);
+  const [analise, setAnalise] = useState<Analise | null>(null);
   const [loading, setLoading] = useState(false);
   const [resposta, setRespostaState] = useState<string | null>(null);
   const [foraEscopo, setForaEscopo] = useState(false);
@@ -83,7 +85,14 @@ function Helion() {
 
   const callHumanize = useServerFn(humanize);
 
-  const canSubmit = (termo.trim().length > 0 || imageDataUrl) && modo && tamanho && !loading;
+  const codeNeedsImage = analise === "codigo" && !imageDataUrl;
+  const canSubmit =
+    (termo.trim().length > 0 || imageDataUrl) &&
+    modo &&
+    tamanho &&
+    analise &&
+    !codeNeedsImage &&
+    !loading;
 
   const handleFile = useCallback((file: File | null | undefined) => {
     if (!file) return;
@@ -101,6 +110,7 @@ function Helion() {
     setImageName(null);
     setModo(null);
     setTamanho(null);
+    setAnalise(null);
     setRespostaState(null);
     setForaEscopo(false);
     setErro(null);
@@ -129,7 +139,7 @@ function Helion() {
   };
 
   const submit = async () => {
-    if (!canSubmit || !modo || !tamanho) return;
+    if (!canSubmit || !modo || !tamanho || !analise) return;
     setLoading(true);
     setRespostaState(null);
     setForaEscopo(false);
@@ -137,7 +147,7 @@ function Helion() {
     setScore(0);
     setScoreTouched(false);
     try {
-      const out = await callHumanize({ data: { termo, modo, tamanho, imageDataUrl } });
+      const out = await callHumanize({ data: { termo, modo, tamanho, imageDataUrl, analise } });
       if (out.foraDeEscopo) setForaEscopo(true);
       else setRespostaState(out.texto);
     } catch (e: any) {
