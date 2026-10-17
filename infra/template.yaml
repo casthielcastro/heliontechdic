@@ -3,10 +3,16 @@ Transform: AWS::Serverless-2016-10-31
 Description: HeliOn - TanStack Start SSR on Lambda (function URL) + S3 static assets behind CloudFront. Pay-per-use only.
 
 Parameters:
-  GeminiApiKey: { Type: String, NoEcho: true }
-  GeminiModel: { Type: String, Default: gemini-flash-latest }
+  BedrockModelId: { Type: String, Default: us.amazon.nova-lite-v1:0 }
   SupabaseUrl: { Type: String, Default: "" }
   SupabasePublishableKey: { Type: String, Default: "" }
+  DomainName: { Type: String, Default: "", Description: "Apex custom domain (www alias added too); empty = CloudFront default domain" }
+  CertificateArn: { Type: String, Default: "", Description: "ACM cert (us-east-1) covering DomainName + www" }
+  HostedZoneId: { Type: String, Default: "", Description: "Route 53 zone for DomainName; empty = no DNS records" }
+
+Conditions:
+  HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
+  HasDns: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
 
 Resources:
   SsrFunction:
@@ -21,10 +27,16 @@ Resources:
       Environment:
         Variables:
           NODE_ENV: production
-          GEMINI_API_KEY: !Ref GeminiApiKey
-          GEMINI_MODEL: !Ref GeminiModel
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_PUBLISHABLE_KEY: !Ref SupabasePublishableKey
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:Converse]
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0
       FunctionUrlConfig:
         AuthType: NONE
 
@@ -67,6 +79,11 @@ Resources:
         Enabled: true
         HttpVersion: http2and3
         PriceClass: PriceClass_100
+        Aliases: !If [HasDomain, [!Ref DomainName, !Sub "www.${DomainName}"], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasDomain
+          - { AcmCertificateArn: !Ref CertificateArn, SslSupportMethod: sni-only, MinimumProtocolVersion: TLSv1.2_2021 }
+          - { CloudFrontDefaultCertificate: true }
         Origins:
           - Id: ssr
             DomainName: !Select [2, !Split ["/", !GetAtt SsrFunctionUrl.FunctionUrl]]
@@ -87,7 +104,41 @@ Resources:
             ViewerProtocolPolicy: redirect-to-https
             CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
 
+  DnsApexA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FHTFKQ0V2X7S }
+  DnsApexAAAA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FHTFKQ0V2X7S }
+  DnsWwwA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "www.${DomainName}"
+      Type: A
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FHTFKQ0V2X7S }
+  DnsWwwAAAA:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "www.${DomainName}"
+      Type: AAAA
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FHTFKQ0V2X7S }
+
 Outputs:
   SiteUrl: { Value: !Sub "https://${Distribution.DomainName}" }
   AssetsBucketName: { Value: !Ref AssetsBucket }
   FunctionUrl: { Value: !GetAtt SsrFunctionUrl.FunctionUrl }
+  CustomUrl: { Condition: HasDomain, Value: !Sub "https://${DomainName}" }
