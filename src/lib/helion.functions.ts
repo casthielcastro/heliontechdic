@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
+import { BedrockRuntimeClient, ConverseCommand, type ContentBlock, type ImageFormat } from "@aws-sdk/client-bedrock-runtime";
 
-const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const MODEL = "google/gemini-2.5-flash";
+const MODEL = process.env.BEDROCK_MODEL_ID || "us.amazon.nova-lite-v1:0";
+const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION || "us-east-1" });
 
 type Mode = "casual" | "tecnica";
 type Length = "curta" | "longa";
@@ -60,25 +61,30 @@ Se for sobre tecnologia:
 - Responda em texto puro (sem JSON, sem markdown com #). Pode usar **negrito** para destaque.`;
 }
 
-async function callGateway(body: unknown): Promise<string> {
-  const apiKey = process.env.LOVABLE_API_KEY;
-  if (!apiKey) throw new Error("LOVABLE_API_KEY not configured");
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+// Accepts the OpenAI-style chat body used below and sends it via Bedrock Converse.
+async function callGateway(body: { max_tokens?: number; messages: { role: string; content: any }[] }): Promise<string> {
+  const system = body.messages.filter((m) => m.role === "system").map((m) => ({ text: String(m.content) }));
+  const messages = body.messages.filter((m) => m.role !== "system").map((m) => {
+    const parts = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content;
+    const content: ContentBlock[] = parts.map((p: any) => {
+      if (p.type !== "image_url") return { text: p.text };
+      const match = /^data:image\/(png|jpe?g|webp|gif);base64,(.+)$/i.exec(p.image_url.url);
+      if (!match) throw new Error("Formato de imagem não suportado (use PNG, JPEG, WEBP ou GIF).");
+      const format = match[1].toLowerCase().replace("jpg", "jpeg") as ImageFormat;
+      return { image: { format, source: { bytes: Buffer.from(match[2], "base64") } } };
+    });
+    return { role: m.role as "user" | "assistant", content };
   });
-  if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 429) throw new Error("Limite de requisições. Tente novamente em instantes.");
-    if (res.status === 402) throw new Error("Créditos esgotados no workspace Lovable AI.");
-    throw new Error(`Gateway ${res.status}: ${text.slice(0, 200)}`);
+  try {
+    const res = await bedrock.send(new ConverseCommand({
+      modelId: MODEL, system, messages,
+      inferenceConfig: { maxTokens: body.max_tokens ?? 1200 },
+    }));
+    return res.output?.message?.content?.map((c) => c.text ?? "").join("") ?? "";
+  } catch (e: any) {
+    if (e?.name === "ThrottlingException") throw new Error("Limite de requisições. Tente novamente em instantes.");
+    throw new Error(`Bedrock: ${String(e?.message ?? e).slice(0, 200)}`);
   }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "";
 }
 
 export const humanize = createServerFn({ method: "POST" })
@@ -100,7 +106,6 @@ export const humanize = createServerFn({ method: "POST" })
     }
 
     const content = await callGateway({
-      model: MODEL,
       max_tokens: 1200,
       messages: [
         { role: "system", content: systemPrompt(data.modo, data.tamanho, data.analise ?? "padrao") },
@@ -149,7 +154,6 @@ export const deepDive = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const isCode = data.analise === "codigo";
     const content = await callGateway({
-      model: MODEL,
       max_tokens: isCode ? 2400 : 1800,
       messages: [
         { role: "system", content: isCode ? DEEP_SYSTEM_CODIGO : DEEP_SYSTEM_PADRAO },
