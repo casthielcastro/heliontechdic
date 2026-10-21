@@ -4,56 +4,57 @@ HELION é um glossário interativo de tecnologia com IA. O usuário digita um te
 
 Se o termo/imagem não for sobre tecnologia, a IA responde que está fora do escopo em vez de alucinar uma resposta.
 
-## Stack técnica
+Produção: **https://usehelion.com.br** (AWS, conta pessoal, foco em custo mínimo).
+
+## Arquitetura (AWS)
+
+```
+Usuário ──HTTPS──> CloudFront (compressão br/gzip, SecurityHeadersPolicy, HTML em cache s-maxage=300)
+   ├─ /assets/*, /robots.txt, /favicon.ico, /og.png ──OAC──> S3 privado (immutable, 1 ano)
+   └─ /, /_serverFn/*, /api/t ──header secreto X-Origin-Verify──> Lambda (Function URL, Node 22 arm64, 512 MB, 25 s)
+        ├─ Bedrock Nova Lite (Converse; texto + imagem; timeout 20 s, 2 tentativas)
+        ├─ DynamoDB on-demand (tabela única: telemetria, notas, contestações, rate limit/cota; TTL; PITR)
+        └─ SNS helion-feedback ──e-mail──> casthiel.cloud@gmail.com
+CloudWatch: logs 14 dias + alarmes Errors/Throttles -> SNS · Budgets: monthly-5usd e zero-spend-template
+```
 
 | Camada | Tecnologia |
 |---|---|
-| Framework | [TanStack Start](https://tanstack.com/start) (SSR) + [TanStack Router](https://tanstack.com/router) |
-| UI | React 19, Tailwind CSS 4, componentes Radix UI no estilo [shadcn/ui](https://ui.shadcn.com) |
-| Dados/estado | TanStack Query |
-| Build | Vite 7 |
-| Backend-as-a-service | Supabase (`@supabase/supabase-js`) — cliente, cliente admin e middleware de auth já escafoldados em `src/integrations/supabase/`, ainda não consumidos pela UI |
-| IA | Chamada a um endpoint de chat compatível com OpenAI (`google/gemini-2.5-flash`) via *server function* do TanStack Start, hoje roteada pelo **AI Gateway do Lovable** |
-| Runtime alvo atual | Cloudflare Workers (via `wrangler` + `@cloudflare/vite-plugin`) |
-| Gerenciador de pacotes | [Bun](https://bun.sh) |
+| Framework | TanStack Start (SSR) + TanStack Router, React 19, Vite 7, Bun |
+| IA | Amazon Bedrock `us.amazon.nova-lite-v1:0` via `ConverseCommand` (`src/lib/helion.functions.ts`) |
+| Back-end | Server functions `humanize`, `deepDive`, `enviarNota`, `reportarErro` + `POST /api/t` (telemetria em lote via `sendBeacon`, em `src/server.ts`) |
+| Dados | DynamoDB single-table (`src/lib/backend.server.ts`) |
+| Infra | SAM: `infra/template.yaml`, deploy: `infra/deploy.sh` |
 
-## Estrutura do projeto
+### Segurança e anti-abuso
+- Function URL só aceita requisições com o header `X-Origin-Verify` injetado pelo CloudFront (acesso direto = 403). O segredo é gerado no 1º deploy e reaproveitado (lido da config da função).
+- Validação com **zod** (termo ≤ 200 chars, enums, imagem ≤ ~1,5 MB e só PNG/JPEG/WEBP/GIF, contexto ≤ 1.200); imagem é reduzida no navegador (≤ 1568 px, JPEG).
+- Rate limit por IP (hash SHA-256 com salt): 10 chamadas de IA/min, feedback 3/min, notas 20/min; **cota diária global** de 2.000 chamadas de IA (`DailyQuota`).
+- Erros do Bedrock viram mensagens amigáveis em pt-BR; detalhe só nos logs/telemetria.
+- Concorrência reservada: **não aplicada** — a conta tem cota de 10 execuções simultâneas e a AWS exige 10 não reservadas. Pedir aumento (gratuito) e reservar 3–5 se quiser um teto rígido.
 
+### DynamoDB (tabela única `pk`/`sk`, TTL no atributo `ttl`)
+| Item | pk | sk | TTL |
+|---|---|---|---|
+| Evento (clique, erro, pageview, latência IA) | `DAY#AAAA-MM-DD` | `EVT#<tipo>#<ISO>#<id>` | 90 dias |
+| Nota de satisfação | `DAY#<dia>` | `SCORE#<ISO>#<id>` | 365 dias |
+| Contestação ("Erramos em algo?") | `FEEDBACK` | `<ISO>#<id>` | sem TTL |
+| Agregado mensal | `METRIC#AAAA-MM` | `humanize#casual#curta#padrao`, `score#25`… | sem TTL |
+| Rate limit / cota | `RL#<tipo>#<ipHash>` / `QUOTA#<dia>` | `<minuto>` / `-` | 2 min / 2 dias |
+
+SNS envia e-mail para toda contestação e para notas ≤ 25% ou com comentário.
+
+## Deploy
+
+```bash
+export AWS_DEFAULT_REGION=us-east-1
+DOMAIN_NAME=usehelion.com.br CERTIFICATE_ARN=<arn ACM us-east-1> HOSTED_ZONE_ID=<zona Route 53> ./infra/deploy.sh
 ```
-src/
-  routes/
-    __root.tsx          # shell HTML, <head>, error/404 boundaries
-    index.tsx            # tela única da aplicação (formulário + resultado)
-  lib/
-    helion.functions.ts   # server functions: humanize() e deepDive() (chamam a IA)
-    error-capture.ts       # captura erros não tratados no SSR
-    error-page.ts           # página HTML de erro genérica
-    utils.ts
-  integrations/supabase/    # clientes Supabase (client, admin, middlewares de auth)
-  components/ui/             # componentes shadcn/ui (Radix + Tailwind)
-  server.ts                   # entrypoint do worker Cloudflare (fetch handler)
-  start.ts                     # configuração do TanStack Start (middlewares globais)
-  router.tsx                    # criação do router + query client
-supabase/config.toml           # id do projeto Supabase
-```
-
-A aplicação é essencialmente uma única rota (`/`) com um formulário complexo — não há páginas adicionais nem autenticação de usuário ativa no momento.
-
-## Variáveis de ambiente
-
-Crie um arquivo `.env` (veja `.env.example`) com:
-
-| Variável | Uso |
-|---|---|
-| `VITE_SUPABASE_URL` / `SUPABASE_URL` | URL do projeto Supabase |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_PUBLISHABLE_KEY` | Chave pública (anon) do Supabase |
-| `VITE_SUPABASE_PROJECT_ID` | Id do projeto Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | Chave de serviço (server-side apenas, bypassa RLS) — necessária apenas se `client.server.ts` for usado |
-| `LOVABLE_API_KEY` | Chave usada hoje para autenticar no AI Gateway do Lovable (ver seção abaixo — precisa ser substituída fora do Lovable) |
-
-As variáveis com prefixo `VITE_` ficam visíveis no bundle do client; as demais só existem no servidor.
+O script: build → envia assets novos ao S3 **antes** de trocar o HTML (sem `--delete`) → `sam deploy` (tag `Project=helion`) → marca assets antigos com `stale=true` (lifecycle apaga em 30 dias) → invalida `/`.
+Após o 1º deploy, **confirme a assinatura SNS** no e-mail recebido.
 
 ## Rodando localmente
+
 
 ```bash
 bun install
@@ -66,92 +67,14 @@ bun run format          # prettier --write
 
 ---
 
-## O que é específico do Lovable (e precisa saber antes de sair de lá)
 
-Este projeto foi criado no [Lovable](https://lovable.dev), então parte da configuração depende do ambiente/sandbox do Lovable e **não funciona fora dele**. Os pontos de acoplamento são:
+Sem `TABLE_NAME`/`TOPIC_ARN`/`ORIGIN_SECRET` no ambiente, telemetria, rate limit, SNS e a checagem de origem são desativados (modo dev). Bedrock usa suas credenciais AWS locais.
 
-1. **`vite.config.ts` usa `@lovable.dev/vite-tanstack-config`**
-   Esse pacote embrulha e injeta automaticamente: o plugin do TanStack Start, o plugin do React, Tailwind, `vite-tsconfig-paths`, o plugin do Cloudflare (só no build), o `componentTagger` do Lovable (edição visual, só em dev), injeção de env `VITE_*` e detecção de sandbox (porta/host). Fora do Lovable isso não resolve (o pacote é privado ao workspace do Lovable) e o build quebra.
+## Custos (uso de portfólio)
+Lambda, CloudFront, SNS, CloudWatch (≤ 10 alarmes) e DynamoDB (25 GB) ficam no free tier. Custos reais: Bedrock Nova Lite (~US$0,30 por 1.000 consultas) e Route 53 (US$0,50/mês pela zona). Total esperado ≈ US$0,80–0,90/mês.
 
-2. **Deploy alvo é Cloudflare Workers**, não um servidor Node genérico:
-   - `wrangler.jsonc` define o worker.
-   - `src/server.ts` exporta um `fetch(request, env, ctx)` no formato de *module worker* do Cloudflare, com uma camada extra para transformar erros 500 "engolidos" pelo h3 em uma página de erro amigável.
-   - Isso é outro motivo pelo qual o app não builda como um "site Node normal" hoje.
-
-3. **A funcionalidade de IA depende do AI Gateway do Lovable**
-   Em `src/lib/helion.functions.ts`, as duas *server functions* (`humanize` e `deepDive`) chamam:
-   ```ts
-   const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
-   const apiKey = process.env.LOVABLE_API_KEY;
-   ```
-   Esse gateway só responde para chaves emitidas dentro de um workspace Lovable — **sem Lovable, essa chamada simplesmente falha** com "LOVABLE_API_KEY not configured" ou erro de autenticação. É o ponto mais crítico para resolver, porque é a funcionalidade central do produto.
-
-4. **Metadados do editor**: a pasta `.lovable/project.json` guarda apenas metadados do template usado pelo editor do Lovable — inofensiva, mas sem função fora dele.
-
-5. **Detalhes cosméticos**: `twitter:site: "@Lovable"` em `src/routes/__root.tsx`, e as mensagens de erro do Supabase ("Connect Supabase in Lovable Cloud") em `client.ts`, `client.server.ts` e `auth-middleware.ts` — o Supabase em si **não** é do Lovable (é um serviço próprio, só foi provisionado via integração "Lovable Cloud"), mas o texto do erro assume que você vai resolver isso na UI do Lovable.
-
-6. **`bun.lock`** tem várias dependências resolvidas contra um *registry mirror* privado do Lovable (`europe-west1-npm.pkg.dev/lovable-core-prod/...`). Isso não impede o build, mas numa máquina/CI fora do Lovable o `bun install` vai re-resolver essas mesmas versões contra o npm público — é esperado e seguro, mas o lockfile vai mudar.
-
-O que **não** é lovable-specific e pode continuar como está: React, TanStack Start/Router/Query, Tailwind, os componentes shadcn/ui, e o Supabase (é só uma integração de banco, portável para qualquer host).
-
-## Checklist para remover o Lovable e preparar para AWS
-
-TanStack Start usa o **Nitro** como motor de build/servidor por baixo dos panos, e Nitro tem presets prontos para vários destinos (`node-server`, `aws-lambda`, `bun`, `vercel`, etc.), então a "saída" natural do Cloudflare para a AWS é troca de preset, não reescrita do app.
-
-**1. Trocar o `vite.config.ts` pela configuração explícita (sem o pacote do Lovable):**
-
-```ts
-import { defineConfig } from "vite";
-import { tanstackStart } from "@tanstack/react-start/plugin/vite";
-import { nitro } from "nitro/vite";
-import viteReact from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import tsConfigPaths from "vite-tsconfig-paths";
-
-export default defineConfig({
-  plugins: [
-    tsConfigPaths({ projects: ["./tsconfig.json"] }),
-    tailwindcss(),
-    tanstackStart(),
-    nitro({ preset: "node-server" }), // troque para "aws-lambda" se for serverless
-    viteReact(),
-  ],
-});
-```
-
-Isso substitui, um a um, tudo que o pacote do Lovable escondia — exceto o `componentTagger` (ferramenta de edição visual do Lovable, sem sentido fora do editor) e a detecção de sandbox (também exclusiva do ambiente deles).
-
-**2. Escolher o destino na AWS e ajustar o preset/deploy:**
-
-| Opção | Preset Nitro | Quando escolher |
-|---|---|---|
-| **ECS Fargate / App Runner** (container) | `node-server` | Recomendado: SSR "always-on" simples, sem cold start, fácil de dimensionar. Empacota num `Dockerfile` (`node .output/server/index.mjs`) |
-| **AWS Lambda** (+ Function URL ou API Gateway) | `aws-lambda` | Se quiser serverless "pague pelo uso"; exige `nitro({ preset: "aws-lambda", awsLambda: { streaming: true } })` |
-| **EC2 / Elastic Beanstalk** | `node-server` | Se já tem infraestrutura EC2 e prefere gerenciar o processo você mesmo (ex: com `pm2`) |
-
-Recomendo `node-server` + ECS Fargate/App Runner: é o caminho com menos superfície de coisa pra dar errado e mais parecido com "rodar `bun run build && bun run start`" localmente.
-
-**3. Reescrever `src/server.ts` / `src/start.ts`.**
-O `fetch(request, env, ctx)` atual é o formato de *module worker* do Cloudflare — o preset `node-server` do Nitro já gera seu próprio servidor HTTP (baseado em h3), então essa camada deixa de ser necessária como está. A lógica de página de erro amigável (`renderErrorPage`) pode ser mantida dentro de um middleware do `start.ts` (o `errorMiddleware` que já existe lá cobre boa parte disso).
-
-**4. Substituir o AI Gateway do Lovable por uma chamada direta ao provedor.**
-O modelo usado é `google/gemini-2.5-flash`, então o caminho mais direto é chamar a API do Gemini diretamente (ou manter o formato "compatível com OpenAI" apontando para o endpoint compatível do Google, ou trocar por OpenAI/Anthropic se preferir). Em `src/lib/helion.functions.ts`, troque:
-```ts
-const GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const apiKey = process.env.LOVABLE_API_KEY;
-```
-por uma chamada ao endpoint real do provedor escolhido, com uma nova env var (ex.: `GEMINI_API_KEY`). O resto da função (`callGateway`, parsing da resposta) muda pouco se você mantiver um endpoint compatível com o formato OpenAI Chat Completions.
-
-**5. Remover o que só existe por causa do Lovable:**
-   - pasta `.lovable/`
-   - dependência `@lovable.dev/vite-tanstack-config` do `package.json`
-   - `bunfig.toml`: linha `minimumReleaseAgeExcludes = ["@lovable.dev/vite-tanstack-config"]`
-   - `wrangler.jsonc` e o pacote `@cloudflare/vite-plugin` (se não for manter Cloudflare como alvo secundário)
-   - `twitter:site: "@Lovable"` em `__root.tsx`
-   - ajustar as mensagens "Connect Supabase in Lovable Cloud" para instruções genéricas (ex.: "defina as variáveis de ambiente do Supabase")
-
-**6. Gerar `.env.example`** e mover segredos (Supabase service role, chave da IA) para o gerenciador de secrets da AWS (Secrets Manager / SSM Parameter Store) em vez de `.env` versionado.
-
-**7. Reinstalar dependências fora do sandbox do Lovable** (`bun install`), o que vai atualizar o `bun.lock` para resolver contra o npm público em vez do mirror privado do Lovable — esperado, sem risco.
-
-> Este README documenta o estado atual e o plano de migração. Nenhuma dessas mudanças foi aplicada ainda — é um guia para você (ou para mim, se pedir) executar o próximo passo.
+## Próxima fase (não implementado de propósito, para manter custo ~zero)
+- **AWS WAF** no CloudFront: regras gerenciadas (Core rule set, IP reputation) + rate-based rule. Custa ~US$5/mês por Web ACL + US$1 por regra + US$0,60/milhão de requisições. Hoje o anti-abuso é feito no Lambda (rate limit + cota no DynamoDB).
+- **Multi-região**: Lambda + DynamoDB Global Tables em uma 2ª região (ex.: us-west-2) com origin group/failover no CloudFront; Bedrock já usa inference profile entre regiões dos EUA. Duplica custos fixos e a complexidade de deploy.
+- **Provisioned concurrency**: elimina o cold start (~1,5 s), mas é cobrada 24/7 (~US$1,5–3/mês por instância de 512 MB). Com o HTML cacheado no CloudFront, o cold start afeta só a 1ª chamada de IA.
+- CI/CD com GitHub Actions + OIDC (sem chaves), streaming da resposta (ConverseStream + Function URL `RESPONSE_STREAM`), quebra de `index.tsx` em componentes e remoção de dependências não usadas (shadcn/Supabase).
