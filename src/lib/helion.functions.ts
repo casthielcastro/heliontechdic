@@ -1,8 +1,67 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequestHeader } from "@tanstack/react-start/server";
 import { BedrockRuntimeClient, ConverseCommand, type ContentBlock, type ImageFormat } from "@aws-sdk/client-bedrock-runtime";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { z } from "zod";
+import { FriendlyError, bump, clientIp, event, hashIp, newId, notify, nowSec, put, rateLimit, today, DAY } from "./backend.server";
 
 const MODEL = process.env.BEDROCK_MODEL_ID || "us.amazon.nova-lite-v1:0";
-const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION || "us-east-1" });
+const bedrock = new BedrockRuntimeClient({
+  region: process.env.AWS_REGION || "us-east-1",
+  maxAttempts: 2,
+  requestHandler: new NodeHttpHandler({ connectionTimeout: 3000, requestTimeout: 20000 }),
+});
+
+const MAX_IMAGE_CHARS = 2_000_000; // ~1.5 MB binary as base64 data URL
+const zModo = z.enum(["casual", "tecnica"]);
+const zTamanho = z.enum(["curta", "longa"]);
+const zAnalise = z.enum(["padrao", "codigo"]);
+const zImage = z.string().max(MAX_IMAGE_CHARS, "Imagem grande demais (máx. ~1,5 MB).")
+  .regex(/^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/i, "Formato de imagem não suportado.");
+
+const HumanizeSchema = z.object({
+  termo: z.string().trim().max(200, "Use no máximo 200 caracteres."),
+  modo: zModo, tamanho: zTamanho, analise: zAnalise.default("padrao"),
+  imageDataUrl: zImage.nullish(),
+  sessionId: z.string().max(64).optional(),
+}).refine((d) => d.termo.length > 0 || !!d.imageDataUrl, "Digite um termo ou anexe uma imagem.")
+  .refine((d) => d.analise !== "codigo" || !!d.imageDataUrl, "A análise de código precisa de uma imagem.");
+
+const DeepDiveSchema = z.object({
+  termo: z.string().trim().min(1).max(200),
+  analise: zAnalise.default("padrao"),
+  contextoCodigo: z.string().max(1200).nullish(),
+  sessionId: z.string().max(64).optional(),
+});
+
+function reqIpHash() {
+  return hashIp(clientIp((n) => getRequestHeader(n)));
+}
+
+/** Friendly pt-BR message to the client; detail only in logs/telemetry. */
+async function guarded<T>(fn: string, sessionId: string | undefined, run: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  const ipHash = reqIpHash();
+  try {
+    await rateLimit(ipHash, "ai", 10);
+    const out = await run();
+    void event("ai", { fn, ms: Date.now() - t0, sessionId, ipHash });
+    return out;
+  } catch (e) {
+    const err = e as Error;
+    if (err instanceof FriendlyError) { void event("ratelimit", { fn, ipHash }); throw new Error(err.message); }
+    console.error(`[${fn}]`, err?.name, err?.message);
+    void event("error", { fn, name: err?.name, msg: String(err?.message).slice(0, 300), ms: Date.now() - t0, sessionId, ipHash });
+    const msg = err?.name === "ThrottlingException" || err?.name === "ServiceQuotaExceededException"
+      ? "Nosso motor de IA está ocupado agora. Tente novamente em alguns segundos."
+      : err?.name === "TimeoutError" || /timeout/i.test(err?.message ?? "")
+      ? "A resposta demorou mais que o esperado. Tente novamente."
+      : err?.name === "ValidationException"
+      ? "Não consegui processar essa entrada (a imagem pode estar ilegível ou grande demais)."
+      : "Algo deu errado ao gerar a explicação. Tente novamente em instantes.";
+    throw new Error(msg);
+  }
+}
 
 type Mode = "casual" | "tecnica";
 type Length = "curta" | "longa";
@@ -75,21 +134,16 @@ async function callGateway(body: { max_tokens?: number; messages: { role: string
     });
     return { role: m.role as "user" | "assistant", content };
   });
-  try {
-    const res = await bedrock.send(new ConverseCommand({
-      modelId: MODEL, system, messages,
-      inferenceConfig: { maxTokens: body.max_tokens ?? 1200 },
-    }));
-    return res.output?.message?.content?.map((c) => c.text ?? "").join("") ?? "";
-  } catch (e: any) {
-    if (e?.name === "ThrottlingException") throw new Error("Limite de requisições. Tente novamente em instantes.");
-    throw new Error(`Bedrock: ${String(e?.message ?? e).slice(0, 200)}`);
-  }
+  const res = await bedrock.send(new ConverseCommand({
+    modelId: MODEL, system, messages,
+    inferenceConfig: { maxTokens: body.max_tokens ?? 1200 },
+  }));
+  return res.output?.message?.content?.map((c) => c.text ?? "").join("") ?? "";
 }
 
 export const humanize = createServerFn({ method: "POST" })
-  .inputValidator((d: HumanizeInput) => d)
-  .handler(async ({ data }) => {
+  .inputValidator((d: unknown) => HumanizeSchema.parse(d))
+  .handler(({ data }) => guarded("humanize", data.sessionId, async () => {
     const userContent: any[] = [];
     const isCode = data.analise === "codigo" && !!data.imageDataUrl;
     const userText = isCode
@@ -115,10 +169,12 @@ export const humanize = createServerFn({ method: "POST" })
 
     const trimmed = content.trim();
     if (trimmed.includes('"fora_de_escopo"') && trimmed.includes("true")) {
-      return { foraDeEscopo: true as const };
+      void bump(`METRIC#${today().slice(0, 7)}`, `humanize#${data.modo}#${data.tamanho}#${data.analise}#fora`);
+      return { foraDeEscopo: true as const, requestId: newId() };
     }
-    return { foraDeEscopo: false as const, texto: trimmed };
-  });
+    void bump(`METRIC#${today().slice(0, 7)}`, `humanize#${data.modo}#${data.tamanho}#${data.analise}${data.imageDataUrl ? "#img" : ""}`);
+    return { foraDeEscopo: false as const, texto: trimmed, requestId: newId() };
+  }));
 
 interface DeepDiveInput {
   termo: string;
@@ -150,8 +206,9 @@ const DEEP_SYSTEM_CODIGO = `Você é um mentor sênior de programação. Receber
 Em português brasileiro. Em videos/artigos/exemplosLinks, inclua 3 itens cada, COBRINDO TANTO a linguagem detectada QUANTO o uso específico do trecho. Prefira fontes confiáveis (documentação oficial, MDN, DevDocs, freeCodeCamp, GitHub, Real Python, etc.). Use URLs reais sempre que possível; quando não tiver certeza, use buscas no formato "https://www.google.com/search?q=..." ou "https://www.youtube.com/results?search_query=...".`;
 
 export const deepDive = createServerFn({ method: "POST" })
-  .inputValidator((d: DeepDiveInput) => d)
-  .handler(async ({ data }) => {
+  .inputValidator((d: unknown) => DeepDiveSchema.parse(d))
+  .handler(({ data }) => guarded("deepDive", data.sessionId, async () => {
+    void bump(`METRIC#${today().slice(0, 7)}`, `deepdive#${data.analise}`);
     const isCode = data.analise === "codigo";
     const content = await callGateway({
       max_tokens: isCode ? 2400 : 1800,
@@ -206,4 +263,53 @@ export const deepDive = createServerFn({ method: "POST" })
         exemplosLinks: [] as { titulo: string; url: string }[],
       };
     }
+  }));
+
+/* ---------- Feedback: satisfaction score + "Erramos em algo?" ---------- */
+const NotaSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  comentario: z.string().trim().max(2000).optional(),
+  termo: z.string().max(200).default(""),
+  modo: zModo.optional(), tamanho: zTamanho.optional(), analise: zAnalise.optional(),
+  requestId: z.string().max(80).optional(),
+  sessionId: z.string().max(64).optional(),
+});
+
+export const enviarNota = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => NotaSchema.parse(d))
+  .handler(async ({ data }) => {
+    const ipHash = reqIpHash();
+    try { await rateLimit(ipHash, "fb", 20); } catch (e) { throw new Error((e as Error).message); }
+    await put({ pk: `DAY#${today()}`, sk: `SCORE#${newId()}`, ...data, ipHash, ttl: nowSec() + 365 * DAY });
+    void bump(`METRIC#${today().slice(0, 7)}`, `score#${data.score}`);
+    let notified = false;
+    if (data.score <= 25 || data.comentario) {
+      notified = await notify(`[HELION] Nota ${data.score}%: ${data.termo || "imagem"}`,
+        `Nota: ${data.score}%\nTermo: ${data.termo}\nModo: ${data.modo}/${data.tamanho}/${data.analise}\nComentário: ${data.comentario ?? "-"}\nrequestId: ${data.requestId}\nQuando: ${new Date().toISOString()}`);
+    }
+    return { ok: true, notified };
+  });
+
+const FeedbackSchema = z.object({
+  texto: z.string().trim().min(5, "Conte um pouco mais (mín. 5 caracteres).").max(2000),
+  termo: z.string().max(200).default(""),
+  resposta: z.string().max(4000).default(""),
+  score: z.number().int().min(0).max(100).nullish(),
+  contato: z.string().trim().max(120).optional(),
+  website: z.string().max(0).optional(), // honeypot: must stay empty
+  requestId: z.string().max(80).optional(),
+  sessionId: z.string().max(64).optional(),
+});
+
+export const reportarErro = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => FeedbackSchema.parse(d))
+  .handler(async ({ data }) => {
+    const ipHash = reqIpHash();
+    try { await rateLimit(ipHash, "fb", 3); } catch (e) { throw new Error((e as Error).message); }
+    const { website: _hp, ...rest } = data;
+    await put({ pk: "FEEDBACK", sk: newId(), ...rest, ipHash, status: "novo" });
+    const ok = await notify(`[HELION] Contestação: ${data.termo || "imagem enviada"}`,
+      `Contestação recebida no HeliOn\n\nTermo: ${data.termo}\nNota: ${data.score ?? "-"}\nContato: ${data.contato || "-"}\n\n--- O que erramos ---\n${data.texto}\n\n--- Resposta original (trecho) ---\n${data.resposta.slice(0, 2000)}\n\nrequestId: ${data.requestId ?? "-"}\nQuando: ${new Date().toISOString()}`);
+    if (!ok) throw new Error("Não conseguimos enviar agora. Tente novamente em instantes.");
+    return { ok: true };
   });

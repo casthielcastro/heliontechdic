@@ -2,6 +2,7 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import { clientIp, eventsBatch, hashIp } from "./lib/backend.server";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -66,12 +67,45 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   return brandedErrorResponse();
 }
 
+const ORIGIN_SECRET = process.env.ORIGIN_SECRET;
+
+// POST /api/t — batched client telemetry (sendBeacon). Max 16 KB, 20 events.
+async function telemetry(request: Request): Promise<Response> {
+  const text = (await request.text()).slice(0, 16_384);
+  try {
+    const body = JSON.parse(text);
+    const evts = (Array.isArray(body?.e) ? body.e : []).filter((e: unknown) => e && typeof e === "object");
+    const ip = hashIp(clientIp((n) => request.headers.get(n)));
+    await eventsBatch(evts, ip, request.headers.get("user-agent") ?? "");
+  } catch { /* ignore malformed */ }
+  return new Response(null, { status: 204 });
+}
+
+function withCacheHeaders(request: Request, response: Response): Response {
+  const url = new URL(request.url);
+  if (request.method !== "GET" || url.pathname.startsWith("/_serverFn")) return response;
+  if (!(response.headers.get("content-type") ?? "").includes("text/html")) return response;
+  const h = new Headers(response.headers);
+  // HTML is identical for everyone: let CloudFront cache it briefly; browsers always revalidate.
+  h.set("cache-control", response.status === 200
+    ? "public, max-age=0, s-maxage=300, stale-while-revalidate=86400"
+    : "no-store");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: h });
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      if (ORIGIN_SECRET && request.headers.get("x-origin-verify") !== ORIGIN_SECRET) {
+        return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain" } });
+      }
+      const url = new URL(request.url);
+      if (url.pathname === "/api/t") {
+        return request.method === "POST" ? await telemetry(request) : new Response(null, { status: 405 });
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
+      return withCacheHeaders(request, await normalizeCatastrophicSsrResponse(response));
     } catch (error) {
       console.error(error);
       return brandedErrorResponse();
