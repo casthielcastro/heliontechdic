@@ -9,26 +9,31 @@ import {
 } from "@tanstack/react-router";
 
 import appCss from "../styles.css?url";
+import interCss from "@fontsource-variable/inter/index.css?url";
+import monoCss400 from "@fontsource/jetbrains-mono/latin-400.css?url";
+import monoCss500 from "@fontsource/jetbrains-mono/latin-500.css?url";
+import logoWebp from "../assets/helion-logo.webp";
+
+const SITE = "https://usehelion.com.br";
+
+const btn = "inline-flex min-h-11 items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400";
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <main className="flex min-h-screen items-center justify-center px-4" style={{ background: "#050505", color: "#F5F5F7" }}>
       <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          The page you're looking for doesn't exist or has been moved.
+        <h1 className="text-7xl font-bold" style={{ color: "#F59E0B" }}>404</h1>
+        <h2 className="mt-4 text-xl font-semibold">Página não encontrada</h2>
+        <p className="mt-2 text-sm" style={{ color: "#A1A1AA" }}>
+          Este caminho ficou no breu. A página que você procura não existe ou foi movida.
         </p>
         <div className="mt-6">
-          <Link
-            to="/"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            Go home
+          <Link to="/" className={btn} style={{ background: "#F59E0B", color: "#050505" }}>
+            Voltar ao início
           </Link>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -37,13 +42,11 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <main role="alert" className="flex min-h-screen items-center justify-center px-4" style={{ background: "#050505", color: "#F5F5F7" }}>
       <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          This page didn't load
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong on our end. You can try refreshing or head back home.
+        <h1 className="text-xl font-semibold tracking-tight">Ops, esta página não carregou</h1>
+        <p className="mt-2 text-sm" style={{ color: "#A1A1AA" }}>
+          Tivemos um problema do nosso lado. Tente de novo ou volte para o início.
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
@@ -51,19 +54,17 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
               router.invalidate();
               reset();
             }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className={btn}
+            style={{ background: "#F59E0B", color: "#050505" }}
           >
-            Try again
+            Tentar de novo
           </button>
-          <a
-            href="/"
-            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-          >
-            Go home
+          <a href="/" className={btn} style={{ border: "1px solid #3f3f46", color: "#F5F5F7" }}>
+            Voltar ao início
           </a>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -72,26 +73,26 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "HELION · Glossário de Tecnologia" },
-      { name: "description", content: "HELION — glossário interativo de tecnologia: humaniza jargões, siglas e expressões técnicas com IA." },
-      { name: "author", content: "HELION" },
-      { property: "og:title", content: "HELION · Glossário de Tecnologia" },
-      { property: "og:description", content: "Iluminando o conhecimento tech — humanize qualquer termo, sigla ou captura de tela." },
+      { title: "HELION · Glossário de Tecnologia com IA" },
+      { name: "description", content: "HELION — glossário interativo de tecnologia: explica jargões, siglas e prints de código em português, com IA." },
+      { name: "theme-color", content: "#050505" },
+      { property: "og:title", content: "HELION · Glossário de Tecnologia com IA" },
+      { property: "og:description", content: "Traduzindo o técnico, iluminando o humano — explique qualquer termo, sigla ou print de código." },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
+      { property: "og:url", content: `${SITE}/` },
+      { property: "og:image", content: `${SITE}/og.png` },
+      { property: "og:locale", content: "pt_BR" },
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:image", content: `${SITE}/og.png` },
     ],
     links: [
-      {
-        rel: "stylesheet",
-        href: appCss,
-      },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap",
-      },
+      { rel: "stylesheet", href: appCss },
+      { rel: "stylesheet", href: interCss },
+      { rel: "stylesheet", href: monoCss400 },
+      { rel: "stylesheet", href: monoCss500 },
+      { rel: "icon", href: "/favicon.ico" },
+      { rel: "canonical", href: `${SITE}/` },
+      { rel: "preload", as: "image", href: logoWebp, type: "image/webp" },
     ],
   }),
   shellComponent: RootShell,
@@ -102,7 +103,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="pt-BR">
       <head>
         <HeadContent />
       </head>

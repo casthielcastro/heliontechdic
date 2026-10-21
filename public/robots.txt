@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://usehelion.com.br/sitemap.xml
