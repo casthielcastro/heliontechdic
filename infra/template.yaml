@@ -9,6 +9,9 @@ Parameters:
   DomainName: { Type: String, Default: "", Description: "Apex custom domain (www alias added too); empty = CloudFront default domain" }
   CertificateArn: { Type: String, Default: "", Description: "ACM cert (us-east-1) covering DomainName + www" }
   HostedZoneId: { Type: String, Default: "", Description: "Route 53 zone for DomainName; empty = no DNS records" }
+  OriginSecret: { Type: String, NoEcho: true, MinLength: 16, Description: "Secret header value CloudFront sends to the Lambda origin (X-Origin-Verify)" }
+  AlertEmail: { Type: String, Default: casthiel.cloud@gmail.com }
+  DailyQuota: { Type: Number, Default: 2000, Description: "Max AI calls per day (global)" }
 
 Conditions:
   HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
@@ -23,14 +26,21 @@ Resources:
       Runtime: nodejs22.x
       Architectures: [arm64]
       MemorySize: 512
-      Timeout: 30
+      Timeout: 25
+      LoggingConfig: { LogGroup: !Ref SsrLogGroup, LogFormat: Text }
       Environment:
         Variables:
           NODE_ENV: production
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           SUPABASE_URL: !Ref SupabaseUrl
           SUPABASE_PUBLISHABLE_KEY: !Ref SupabasePublishableKey
+          TABLE_NAME: !Ref TelemetryTable
+          TOPIC_ARN: !Ref FeedbackTopic
+          ORIGIN_SECRET: !Ref OriginSecret
+          DAILY_QUOTA: !Ref DailyQuota
       Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref TelemetryTable }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt FeedbackTopic.TopicName }
         - Statement:
             - Effect: Allow
               Action: [bedrock:InvokeModel, bedrock:Converse]
@@ -40,9 +50,93 @@ Resources:
       FunctionUrlConfig:
         AuthType: NONE
 
+  SsrLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/helion/${AWS::StackName}-ssr", RetentionInDays: 14 }
+
+  TelemetryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: pk, AttributeType: S }, { AttributeName: sk, AttributeType: S }]
+      KeySchema: [{ AttributeName: pk, KeyType: HASH }, { AttributeName: sk, KeyType: RANGE }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+
+  FeedbackTopic:
+    Type: AWS::SNS::Topic
+    Properties: { TopicName: !Sub "${AWS::StackName}-feedback", DisplayName: HeliOn }
+  FeedbackEmail:
+    Type: AWS::SNS::Subscription
+    Properties: { TopicArn: !Ref FeedbackTopic, Protocol: email, Endpoint: !Ref AlertEmail }
+  AlarmsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref FeedbackTopic]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudwatch.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref FeedbackTopic
+
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: HeliOn Lambda errors > 5 in 5 min
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref SsrFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref FeedbackTopic]
+  ThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: HeliOn Lambda throttles > 0
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref SsrFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref FeedbackTopic]
+
+  HtmlCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-html"
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: all }
+
   AssetsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-stale-assets
+            Status: Enabled
+            TagFilters: [{ Key: stale, Value: "true" }]
+            ExpirationInDays: 30
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -88,6 +182,7 @@ Resources:
           - Id: ssr
             DomainName: !Select [2, !Split ["/", !GetAtt SsrFunctionUrl.FunctionUrl]]
             CustomOriginConfig: { OriginProtocolPolicy: https-only }
+            OriginCustomHeaders: [{ HeaderName: X-Origin-Verify, HeaderValue: !Ref OriginSecret }]
           - Id: assets
             DomainName: !GetAtt AssetsBucket.RegionalDomainName
             OriginAccessControlId: !GetAtt AssetsOAC.Id
@@ -96,13 +191,57 @@ Resources:
           TargetOriginId: ssr
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
+          Compress: true
+          CachePolicyId: !Ref HtmlCachePolicy                          # honors origin s-maxage
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewerExceptHostHeader
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # SecurityHeadersPolicy
         CacheBehaviors:
+          - PathPattern: /_serverFn/*
+            TargetOriginId: ssr
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /api/*
+            TargetOriginId: ssr
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
           - PathPattern: /assets/*
             TargetOriginId: assets
             ViewerProtocolPolicy: redirect-to-https
+            Compress: true
             CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /robots.txt
+            TargetOriginId: assets
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /sitemap.xml
+            TargetOriginId: assets
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /favicon.ico
+            TargetOriginId: assets
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /og.png
+            TargetOriginId: assets
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
 
   DnsApexA:
     Type: AWS::Route53::RecordSet
@@ -141,4 +280,6 @@ Outputs:
   SiteUrl: { Value: !Sub "https://${Distribution.DomainName}" }
   AssetsBucketName: { Value: !Ref AssetsBucket }
   FunctionUrl: { Value: !GetAtt SsrFunctionUrl.FunctionUrl }
+  TableName: { Value: !Ref TelemetryTable }
+  TopicArn: { Value: !Ref FeedbackTopic }
   CustomUrl: { Condition: HasDomain, Value: !Sub "https://${DomainName}" }
