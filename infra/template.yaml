@@ -166,6 +166,16 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
 
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerPreferred }] }
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      LifecycleConfiguration: { Rules: [{ Id: expire-logs, Status: Enabled, ExpirationInDays: 30 }] }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -173,6 +183,7 @@ Resources:
         Enabled: true
         HttpVersion: http2and3
         PriceClass: PriceClass_100
+        Logging: { Bucket: !GetAtt LogsBucket.RegionalDomainName, Prefix: cloudfront/, IncludeCookies: false }
         Aliases: !If [HasDomain, [!Ref DomainName, !Sub "www.${DomainName}"], !Ref AWS::NoValue]
         ViewerCertificate: !If
           - HasDomain
@@ -277,6 +288,8 @@ Resources:
       AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
 
 Outputs:
+  LogsBucketName:
+    Value: !Ref LogsBucket
   SiteUrl: { Value: !Sub "https://${Distribution.DomainName}" }
   AssetsBucketName: { Value: !Ref AssetsBucket }
   FunctionUrl: { Value: !GetAtt SsrFunctionUrl.FunctionUrl }
