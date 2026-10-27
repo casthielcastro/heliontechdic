@@ -39,13 +39,15 @@ function reqIpHash() {
 }
 
 /** Friendly pt-BR message to the client; detail only in logs/telemetry. */
-async function guarded<T>(fn: string, sessionId: string | undefined, run: () => Promise<T>): Promise<T> {
+async function guarded<T>(fn: string, sessionId: string | undefined, termoRaw: string | undefined, run: () => Promise<T>): Promise<T> {
   const t0 = Date.now();
+  // Only the searched topic (trimmed, single line, ≤100 chars) — no full text, no images.
+  const termo = (termoRaw ?? "").replace(/\s+/g, " ").trim().slice(0, 100) || undefined;
   const ipHash = reqIpHash();
   try {
     await rateLimit(ipHash, "ai", 10);
     const out = await run();
-    void event("ai", { fn, ms: Date.now() - t0, sessionId, ipHash });
+    await event("ai", { fn, termo, ms: Date.now() - t0, sessionId, ipHash });
     return out;
   } catch (e) {
     const err = e as Error;
@@ -143,7 +145,7 @@ async function callGateway(body: { max_tokens?: number; messages: { role: string
 
 export const humanize = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => HumanizeSchema.parse(d))
-  .handler(({ data }) => guarded("humanize", data.sessionId, async () => {
+  .handler(({ data }) => guarded("humanize", data.sessionId, data.termo, async () => {
     const userContent: any[] = [];
     const isCode = data.analise === "codigo" && !!data.imageDataUrl;
     const userText = isCode
@@ -207,7 +209,7 @@ Em português brasileiro. Em videos/artigos/exemplosLinks, inclua 3 itens cada, 
 
 export const deepDive = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => DeepDiveSchema.parse(d))
-  .handler(({ data }) => guarded("deepDive", data.sessionId, async () => {
+  .handler(({ data }) => guarded("deepDive", data.sessionId, data.termo, async () => {
     void bump(`METRIC#${today().slice(0, 7)}`, `deepdive#${data.analise}`);
     const isCode = data.analise === "codigo";
     const content = await callGateway({
