@@ -176,6 +176,27 @@ Resources:
       BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
       LifecycleConfiguration: { Rules: [{ Id: expire-logs, Status: Enabled, ExpirationInDays: 30 }] }
 
+  ScannerBlockFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-scanner-block"
+      AutoPublish: true
+      FunctionConfig: { Comment: Return 404 at edge for vulnerability-scanner paths, Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        var EXT = /\.(php\d?|phtml|aspx?|ashx|asmx|jsp|jspx|cgi|pl|env|ini|bak|old|orig|swp|sql|sqlite|db|zip|tar|gz|tgz|rar|7z|log|pem|key|conf|cfg|yml|yaml|toml|sh|py|rb|xml\.bak)$/i;
+        var SEG = /^\/(wp-[^\/]*|wordpress|cgi-bin|phpmyadmin|pma|myadmin|xmlrpc|vendor|node_modules|actuator|server-status|owa|boaform|HNAP1|solr|telescope|debug|admin\.|backup|config|credentials?|secrets?|aws|docker)([\/._-]|$)/i;
+        var JSON_SECRET = /(credential|secret|config|settings|appsettings|database|db|keys?|aws|firebase|parameters|composer|package-lock|auth)[^\/]*\.json$/i;
+        function handler(event) {
+          var uri = event.request.uri;
+          var blocked = false;
+          if (uri.indexOf('/.well-known/') !== 0 && /\/\./.test(uri)) blocked = true;
+          else if (EXT.test(uri) || SEG.test(uri) || JSON_SECRET.test(uri)) blocked = true;
+          if (!blocked) return event.request;
+          return { statusCode: 404, statusDescription: 'Not Found',
+            headers: { 'content-type': { value: 'text/plain' }, 'cache-control': { value: 'public, max-age=86400' }, 'x-blocked-by': { value: 'edge' } },
+            body: 'Not Found' };
+        }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -206,6 +227,7 @@ Resources:
           CachePolicyId: !Ref HtmlCachePolicy                          # honors origin s-maxage
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # AllViewerExceptHostHeader
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # SecurityHeadersPolicy
+          FunctionAssociations: [{ EventType: viewer-request, FunctionARN: !GetAtt ScannerBlockFunction.FunctionMetadata.FunctionARN }]
         CacheBehaviors:
           - PathPattern: /_serverFn/*
             TargetOriginId: ssr
@@ -215,6 +237,7 @@ Resources:
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
             ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+            FunctionAssociations: [{ EventType: viewer-request, FunctionARN: !GetAtt ScannerBlockFunction.FunctionMetadata.FunctionARN }]
           - PathPattern: /api/*
             TargetOriginId: ssr
             ViewerProtocolPolicy: redirect-to-https
@@ -223,6 +246,7 @@ Resources:
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # CachingDisabled
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
             ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+            FunctionAssociations: [{ EventType: viewer-request, FunctionARN: !GetAtt ScannerBlockFunction.FunctionMetadata.FunctionARN }]
           - PathPattern: /assets/*
             TargetOriginId: assets
             ViewerProtocolPolicy: redirect-to-https
