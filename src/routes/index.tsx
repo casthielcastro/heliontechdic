@@ -570,10 +570,10 @@ function HelpScale({ score, onChange, termo, modo, tamanho, analise, requestId }
   const [comentario, setComentario] = useState("");
   const [st, setSt] = useState<"idle" | "sending" | "ok" | "err">("idle");
   const sendComment = async () => {
-    if (!comentario.trim() || score === null) return;
+    if (score === null) return;
     setSt("sending");
     try {
-      await callNota({ data: { score, comentario: comentario.trim(), termo: termo.slice(0, 200), modo, tamanho, analise, requestId, sessionId } });
+      await callNota({ data: { score, comentario: comentario.trim() || undefined, termo: termo.slice(0, 200), modo, tamanho, analise, requestId, sessionId } });
       setSt("ok"); setComentario("");
     } catch { setSt("err"); }
   };
@@ -593,7 +593,7 @@ function HelpScale({ score, onChange, termo, modo, tamanho, analise, requestId }
         )}
       </div>
       <input id="help-scale" type="range" min={0} max={100} step={25} value={score ?? 50}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => { onChange(Number(e.target.value)); setSt("idle"); }}
         onKeyDown={(e) => { if (score === null && (e.key === "Enter" || e.key === " ")) onChange(50); }}
         className={`helion-slider${score === null ? " neutral" : ""}`}
         aria-valuetext={current ? `${current.value}%: ${current.phrase}` : "Ainda não avaliado"} />
@@ -607,13 +607,13 @@ function HelpScale({ score, onChange, termo, modo, tamanho, analise, requestId }
             <input id="nota-coment" type="text" value={comentario} maxLength={500} onChange={(e) => { setComentario(e.target.value); setSt("idle"); }}
               placeholder={score <= 25 ? "O que faltou? (opcional)" : "Quer deixar um comentário? (opcional)"}
               style={{ flex: 1, minHeight: 44, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 10, padding: "0 12px", color: C.text, fontFamily: FONT_BODY, fontSize: 14 }} />
-            <button type="button" onClick={sendComment} disabled={!comentario.trim() || st === "sending"} className="helion-ghost"
-              style={{ minHeight: 44, padding: "0 14px", borderRadius: 10, border: `1px solid ${C.borderAmber}`, background: "transparent", color: C.amber, fontFamily: FONT_MONO, fontSize: 12, cursor: "pointer", opacity: comentario.trim() ? 1 : 0.6 }}>
+            <button type="button" onClick={sendComment} disabled={st === "sending" || st === "ok"} className="helion-ghost"
+              style={{ minHeight: 44, padding: "0 14px", borderRadius: 10, border: `1px solid ${C.borderAmber}`, background: "transparent", color: C.amber, fontFamily: FONT_MONO, fontSize: 12, cursor: "pointer", opacity: st === "ok" ? 0.6 : 1 }}>
               {st === "sending" ? "Enviando…" : "Enviar"}
             </button>
           </div>
           <p aria-live="polite" style={{ fontSize: 13, margin: "6px 0 0", color: st === "err" ? "#FCA5A5" : C.amberHi, minHeight: 16 }}>
-            {st === "ok" ? "Obrigado! Comentário recebido." : st === "err" ? "Não foi possível enviar. Tente de novo." : ""}
+            {st === "ok" ? "Obrigado! Avaliação recebida." : st === "err" ? "Não foi possível enviar. Tente de novo." : ""}
           </p>
           {(score === 50 || score === 75) && <p style={{ fontSize: 13, color: C.amberHi, margin: "4px 0 0" }}>↓ Dica: o Compêndio Avançado aprofunda o tema.</p>}
           {score <= 25 && <p style={{ fontSize: 13, color: C.amberHi, margin: "4px 0 0" }}>↓ Nos ajude a corrigir: clique em “Erramos em algo?”.</p>}
