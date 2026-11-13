@@ -48,7 +48,7 @@ Resources:
                 - arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0
                 - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0
       FunctionUrlConfig:
-        AuthType: NONE
+        AuthType: AWS_IAM   # only CloudFront (OAC, SsrUrlPermissionCloudFront) can call it
 
   SsrLogGroup:
     Type: AWS::Logs::LogGroup
