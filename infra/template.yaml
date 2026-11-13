@@ -223,6 +223,10 @@ Resources:
             DomainName: !GetAtt AssetsBucket.RegionalDomainName
             OriginAccessControlId: !GetAtt AssetsOAC.Id
             S3OriginConfig: { OriginAccessIdentity: "" }
+        # Lambda overloaded/timeout -> branded static page from S3 (never cached, so recovery is instant).
+        CustomErrorResponses:
+          - { ErrorCode: 503, ResponseCode: 503, ResponsePagePath: /errors/503.html, ErrorCachingMinTTL: 0 }
+          - { ErrorCode: 504, ResponseCode: 504, ResponsePagePath: /errors/503.html, ErrorCachingMinTTL: 0 }
         DefaultCacheBehavior:
           TargetOriginId: ssr
           ViewerProtocolPolicy: redirect-to-https
@@ -252,6 +256,12 @@ Resources:
             ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
             FunctionAssociations: [{ EventType: viewer-request, FunctionARN: !GetAtt ScannerBlockFunction.FunctionMetadata.FunctionARN }]
           - PathPattern: /assets/*
+            TargetOriginId: assets
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # CachingOptimized
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          - PathPattern: /errors/*
             TargetOriginId: assets
             ViewerProtocolPolicy: redirect-to-https
             Compress: true
