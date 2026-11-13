@@ -152,6 +152,32 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  SsrOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-ssr-oac"
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront (this distribution only) may call the IAM-protected function URL.
+  SsrUrlPermissionCloudFront:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SsrFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+  SsrInvokePermissionCloudFront:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SsrFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
   AssetsBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -218,6 +244,7 @@ Resources:
           - Id: ssr
             DomainName: !Select [2, !Split ["/", !GetAtt SsrFunctionUrl.FunctionUrl]]
             CustomOriginConfig: { OriginProtocolPolicy: https-only }
+            OriginAccessControlId: !GetAtt SsrOAC.Id
             OriginCustomHeaders: [{ HeaderName: X-Origin-Verify, HeaderValue: !Ref OriginSecret }]
           - Id: assets
             DomainName: !GetAtt AssetsBucket.RegionalDomainName
