@@ -1,4 +1,6 @@
-// Tiny client telemetry: queue + sendBeacon to /api/t (flush every 10 s / on hide). No PII.
+// Tiny client telemetry: queue + keepalive fetch to /api/t (flush every 10 s / on hide). No PII.
+// Not sendBeacon: it cannot send x-amz-content-sha256, which CloudFront OAC -> Lambda URL requires on POST.
+import { sha256Hex } from "./sha256";
 type Evt = Record<string, string | number | boolean | null | undefined>;
 const q: Evt[] = [];
 let started = false;
@@ -19,9 +21,10 @@ function flush() {
   if (!q.length) return;
   const body = JSON.stringify({ e: q.splice(0, 20) });
   try {
-    if (!navigator.sendBeacon?.("/api/t", new Blob([body], { type: "application/json" }))) {
-      void fetch("/api/t", { method: "POST", body, keepalive: true, headers: { "content-type": "application/json" } });
-    }
+    void fetch("/api/t", {
+      method: "POST", body, keepalive: true,
+      headers: { "content-type": "application/json", "x-amz-content-sha256": sha256Hex(body) },
+    }).catch(() => {});
   } catch { /* ignore */ }
 }
 

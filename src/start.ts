@@ -1,6 +1,7 @@
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
 import { renderErrorPage } from "./lib/error-page";
+import { rpcFetch } from "./lib/rpc-fetch";
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
   try {
@@ -19,4 +20,6 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 
 export const startInstance = createStart(() => ({
   requestMiddleware: [errorMiddleware],
+  // Client-only: body hash for CloudFront OAC + retry with backoff on 429/503/504/network errors.
+  serverFns: { fetch: rpcFetch },
 }));
