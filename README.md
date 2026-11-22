@@ -6,6 +6,10 @@ Se o termo/imagem não for sobre tecnologia, a IA responde que está fora do esc
 
 Produção: **https://usehelion.com.br** (AWS, conta pessoal, foco em custo mínimo).
 
+## Origem e migração da IA
+
+O HeliOn começou no [Lovable](https://lovable.dev), com o modelo `google/gemini-2.5-flash` pelo AI Gateway do Lovable, rodando em Cloudflare Workers. O backend de IA foi migrado para o **Amazon Bedrock**, modelo **Amazon Nova Lite** (`us.amazon.nova-lite-v1:0`), via Converse API (`ConverseCommand` em `src/lib/helion.functions.ts`). A aplicação roda hoje na AWS.
+
 ## Arquitetura (AWS)
 
 ```
@@ -22,27 +26,41 @@ CloudWatch: logs 14 dias + alarmes Errors/Throttles -> SNS · Budgets: monthly-5
 |---|---|
 | Framework | TanStack Start (SSR) + TanStack Router, React 19, Vite 7, Bun |
 | IA | Amazon Bedrock `us.amazon.nova-lite-v1:0` via `ConverseCommand` (`src/lib/helion.functions.ts`) |
-| Back-end | Server functions `humanize`, `deepDive`, `enviarNota`, `reportarErro` + `POST /api/t` (telemetria em lote via `sendBeacon`, em `src/server.ts`) |
-| Dados | DynamoDB single-table (`src/lib/backend.server.ts`) |
+| Back-end | Server functions `humanize`, `deepDive`, `enviarNota`, `reportarErro` + `POST /api/t` (telemetria em lote via `fetch` com keepalive, em `src/server.ts`) |
+| Dados | DynamoDB on-demand, tabela única (`TABLE_NAME`, `src/lib/backend.server.ts`). SNS `helion-feedback` (`TOPIC_ARN`) para e-mail. O Supabase está escafoldado e **não é usado** pela aplicação. |
 | Infra | SAM: `infra/template.yaml`, deploy: `infra/deploy.sh` |
 
 ### Segurança e anti-abuso
-- Function URL só aceita requisições com o header `X-Origin-Verify` injetado pelo CloudFront (acesso direto = 403). O segredo é gerado no 1º deploy e reaproveitado (lido da config da função).
+- Function URL com `AuthType: AWS_IAM` e OAC do CloudFront: só a distribution assina as chamadas. Continua o header `X-Origin-Verify` injetado pelo CloudFront. Acesso direto à URL da Lambda = 403, sem invocar a função. O segredo é gerado no 1º deploy e reaproveitado (lido da config da função).
 - Validação com **zod** (termo ≤ 200 chars, enums, imagem ≤ ~1,5 MB e só PNG/JPEG/WEBP/GIF, contexto ≤ 1.200); imagem é reduzida no navegador (≤ 1568 px, JPEG).
-- Rate limit por IP (hash SHA-256 com salt): 10 chamadas de IA/min, feedback 3/min, notas 20/min; **cota diária global** de 2.000 chamadas de IA (`DailyQuota`).
+- Rate limit por IP (hash SHA-256 com salt): 10 chamadas de IA/min, feedback 3/min, notas 20/min; **cota diária global** de 2.000 chamadas de IA (`DAILY_QUOTA`).
 - Erros do Bedrock viram mensagens amigáveis em pt-BR; detalhe só nos logs/telemetria.
-- Concorrência reservada: **não aplicada** — a conta tem cota de 10 execuções simultâneas e a AWS exige 10 não reservadas. Pedir aumento (gratuito) e reservar 3–5 se quiser um teto rígido.
+- Concorrência reservada: **não aplicada**. A cota da conta, que era 10, foi elevada para 1.000 (caso 179460920100065).
 
-### DynamoDB (tabela única `pk`/`sk`, TTL no atributo `ttl`)
+### Camada de dados
+
+O banco em produção é uma tabela única do **DynamoDB** on-demand (`TelemetryTable` em `infra/template.yaml`), chaves `pk`/`sk`, TTL no atributo `ttl` e PITR ligado. A Lambda recebe o nome da tabela em `TABLE_NAME`. Sem `TABLE_NAME` no ambiente (por exemplo no `bun run dev` local), as gravações são ignoradas — é o modo dev.
+
+O que é guardado (código em `src/lib/backend.server.ts` e `src/lib/helion.functions.ts`):
+
 | Item | pk | sk | TTL |
 |---|---|---|---|
-| Evento (clique, erro, pageview, latência IA) | `DAY#AAAA-MM-DD` | `EVT#<tipo>#<ISO>#<id>` | 90 dias |
+| Evento (consulta de IA, erro, rate limit, pageview, clique) | `DAY#AAAA-MM-DD` | `EVT#<tipo>#<ISO>#<id>` | 90 dias |
 | Nota de satisfação | `DAY#<dia>` | `SCORE#<ISO>#<id>` | 365 dias |
 | Contestação ("Erramos em algo?") | `FEEDBACK` | `<ISO>#<id>` | sem TTL |
 | Agregado mensal | `METRIC#AAAA-MM` | `humanize#casual#curta#padrao`, `score#25`… | sem TTL |
 | Rate limit / cota | `RL#<tipo>#<ipHash>` / `QUOTA#<dia>` | `<minuto>` / `-` | 2 min / 2 dias |
 
-SNS envia e-mail para toda contestação e para notas ≤ 25% ou com comentário.
+Fluxo dos dados:
+
+1. **Consulta de IA** (`humanize` / `deepDive`): rate limit (10/min por hash de IP + cota diária global, padrão 2.000) → Amazon Bedrock → evento `ai` (ou `ratelimit` / `error`) e incremento do agregado mensal. O termo buscado é gravado só aparado, em uma linha e com no máximo 100 caracteres; imagem e texto completo não entram no banco.
+2. **Nota** (`enviarNota`): rate limit 20/min → item `SCORE#…` → agregado `score#…`. Se a nota for ≤ 25% ou tiver comentário, publica no SNS.
+3. **Contestação** (`reportarErro`): rate limit 3/min → item em `FEEDBACK` (sem TTL, status `novo`) → e-mail obrigatório via SNS; se o envio falhar, a função devolve erro.
+4. **Telemetria do cliente**: `track()` em `src/lib/telemetry.ts` agrupa eventos (`pageview`, cliques, `ai_ok`, `error_client`, `error_ai`) e envia `POST /api/t` (lote de até 20 eventos, 16 KB) com `fetch` e keepalive. O servidor grava os eventos com TTL de 90 dias. O IP entra só como hash SHA-256 (salt `ORIGIN_SECRET`); não há PII de propósito.
+
+**Alertas SNS** (`TOPIC_ARN`, tópico `helion-feedback`, assinatura de e-mail em `casthiel.cloud@gmail.com`): além das notas baixas/comentadas e de toda contestação, os alarmes do CloudWatch (Errors > 5 em 5 min, Throttles > 0) publicam no mesmo tópico. Sem `TOPIC_ARN`, `notify()` não envia nada.
+
+**Supabase:** os clientes e o middleware de auth continuam em `src/integrations/supabase/`, a dependência `@supabase/supabase-js` está no `package.json`, e o template ainda passa `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` para a Lambda. Nenhuma rota nem server function importa esses clientes — o Supabase **não é usado** pela aplicação hoje. Os dados de produção passam só pelo DynamoDB e pelo SNS.
 
 ## Deploy
 
@@ -55,7 +73,6 @@ Após o 1º deploy, **confirme a assinatura SNS** no e-mail recebido.
 
 ## Rodando localmente
 
-
 ```bash
 bun install
 bun run dev       # http://localhost:3000 (padrão do Vite)
@@ -65,10 +82,7 @@ bun run lint          # eslint
 bun run format          # prettier --write
 ```
 
----
-
-
-Sem `TABLE_NAME`/`TOPIC_ARN`/`ORIGIN_SECRET` no ambiente, telemetria, rate limit, SNS e a checagem de origem são desativados (modo dev). Bedrock usa suas credenciais AWS locais.
+Sem `TABLE_NAME`/`TOPIC_ARN`/`ORIGIN_SECRET` no ambiente, telemetria, rate limit, SNS e a checagem de origem são desativados (modo dev). Bedrock usa suas credenciais AWS locais (`AWS_REGION` padrão `us-east-1`; `BEDROCK_MODEL_ID` opcional, padrão `us.amazon.nova-lite-v1:0`).
 
 ## Custos (uso de portfólio)
 Lambda, CloudFront, SNS, CloudWatch (≤ 10 alarmes) e DynamoDB (25 GB) ficam no free tier. Custos reais: Bedrock Nova Lite (~US$0,30 por 1.000 consultas) e Route 53 (US$0,50/mês pela zona). Total esperado ≈ US$0,80–0,90/mês.
